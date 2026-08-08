@@ -15,15 +15,26 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+# Set working directory to project root
+knitr::opts_knit$set(root.dir = getwd())
 ```
 
 # Introduction
 This document presents the empirical analysis for the paper "Do the relative supply of bachelor's graduates affect the unemployment gap between degree holders and non-degree holders in Canada?" Using Statistics Canada's Labour Force Survey (LFS) from 2006 to 2025, we estimate linear probability models, probit models, and an aggregate province‑year panel regression to examine whether rising bachelor supply erodes the unemployment advantage of degree holders.
 
-**Data availability:** This analysis uses Statistics Canada's Labour Force Survey Public Use Microdata File (PUMF). The raw microdata is not included in this repository — check Statistics Canada's licensing terms before redistributing it, and download it directly from [Statistics Canada](https://www.statcan.gc.ca/) if you want to reproduce these results. Place the file at `data/EVERMD.csv` relative to this document (see below), or update `DATA_PATH`.
+**Data availability:** This analysis uses Statistics Canada's Labour Force Survey Public Use Microdata File (PUMF). The raw microdata is too large to be hosted on GitHub.
+
+You can download it from the following Dropbox link:
+[INSERT DROPBOX LINK HERE]
+
+After downloading, place the file in the following location relative to the project root before running the analysis:
+
+`data/EVERMD.csv`
+
+**Note:** Statistics Canada Labour Force Survey (LFS) microdata is subject to StatCan's licensing terms. Please review the applicable license before redistributing or using this file outside of this project.
 
 # Setup and Data Loading
-We first load required packages and define file paths. `DATA_PATH` and `OUTPUT_DIR` are relative to the project root, so this should run as-is after cloning the repo — just make sure the LFS CSV is placed at `data/EVERMD.csv`.
+We first load required packages and define file paths. `DATA_PATH` and `OUTPUT_DIR` are relative to the project root. Make sure the LFS CSV is placed at `data/EVERMD.csv` before running this analysis.
 
 ```{r}
 library(dplyr)
@@ -40,9 +51,10 @@ library(data.table)
 
 
 ```{r paths, echo=FALSE}
-# Since the RMD is in the Codes folder, go up one level to project root
-DATA_PATH  <- "../data/EVERMD.csv"
-OUTPUT_DIR <- "../results"
+# File paths relative to project root
+# The CSV file should be placed at: data/EVERMD.csv
+DATA_PATH  <- "data/EVERMD.csv"
+OUTPUT_DIR <- "results"
 if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE)
 out <- function(f) file.path(OUTPUT_DIR, f)
 ```

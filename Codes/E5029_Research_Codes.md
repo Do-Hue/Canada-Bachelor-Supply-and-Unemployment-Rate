@@ -1,0 +1,588 @@
+Bachelor Supply and the Unemployment Gap in Canada
+================
+Arka Dev Biswas Deepra, Dominic Muhimfura
+2026-08-08
+
+- [Introduction](#introduction)
+- [Setup and Data Loading](#setup-and-data-loading)
+- [Helper functions](#helper-functions)
+- [Province and industry labels](#province-and-industry-labels)
+- [Data Preparation](#data-preparation)
+  - [Load raw data](#load-raw-data)
+  - [Apply age filter (22+) and build
+    panels](#apply-age-filter-22-and-build-panels)
+  - [Individual‑level dataset](#individuallevel-dataset)
+- [Descriptive Statistics](#descriptive-statistics)
+- [Plots](#plots)
+  - [Unemployment gap over time](#unemployment-gap-over-time)
+  - [Bachelor share of employment over
+    time](#bachelor-share-of-employment-over-time)
+  - [Unemployment rates by education
+    group](#unemployment-rates-by-education-group)
+  - [Province‑level heterogeneity](#provincelevel-heterogeneity)
+  - [Industry employment rates](#industry-employment-rates)
+- [Model Estimation](#model-estimation)
+  - [Linear Probability Model with
+    Interaction](#linear-probability-model-with-interaction)
+  - [Aggregate Unemployment Gap Model (Province‑Year
+    Panel)](#aggregate-unemployment-gap-model-provinceyear-panel)
+  - [Probit Models](#probit-models)
+- [Conclusion](#conclusion)
+
+# Introduction
+
+This document presents the empirical analysis for the paper “Do the
+relative supply of bachelor’s graduates affect the unemployment gap
+between degree holders and non-degree holders in Canada?” Using
+Statistics Canada’s Labour Force Survey (LFS) from 2006 to 2025, we
+estimate linear probability models, probit models, and an aggregate
+province‑year panel regression to examine whether rising bachelor supply
+erodes the unemployment advantage of degree holders.
+
+**Data availability:** This analysis uses Statistics Canada’s Labour
+Force Survey Public Use Microdata File (PUMF). The raw microdata is not
+included in this repository — check Statistics Canada’s licensing terms
+before redistributing it, and download it directly from [Statistics
+Canada](https://www.statcan.gc.ca/) if you want to reproduce these
+results. Place the file at `data/EVERMD.csv` relative to this document
+(see below), or update `DATA_PATH`.
+
+# Setup and Data Loading
+
+We first load required packages and define file paths. `DATA_PATH` and
+`OUTPUT_DIR` are relative to the project root, so this should run as-is
+after cloning the repo — just make sure the LFS CSV is placed at
+`data/EVERMD.csv`.
+
+``` r
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(readr)
+library(fixest)
+library(modelsummary)
+library(patchwork)
+library(scales)
+library(data.table)
+```
+
+# Helper functions
+
+We define a table‑saving function that uses ggplot2 to create clean PNG
+images of regression tables.
+
+``` r
+save_table <- function(df, filepath, title = NULL, note = NULL) {
+  df <- as.data.frame(df)
+  drop <- tolower(names(df)) %in% c("part", "statistic", "n")
+  df   <- df[, !drop, drop = FALSE]
+  names(df)[1] <- "Variable"
+  df[sapply(df, is.numeric)] <- lapply(df[sapply(df, is.numeric)], round, 3)
+  df[] <- lapply(df, as.character)
+  
+  nc <- ncol(df); nr <- nrow(df)
+  cw <- c(2.6, rep(1.0, nc - 1))
+  
+  cells <- rbind(
+    data.frame(row=0, col=seq_len(nc), label=colnames(df), is_hdr=TRUE),
+    do.call(rbind, lapply(seq_len(nr), function(r)
+      data.frame(row=r, col=seq_len(nc), label=unlist(df[r,]), is_hdr=FALSE)))
+  )
+  cells$fill  <- ifelse(cells$is_hdr, "#EAF1F8",
+                        ifelse(cells$row %% 2 == 1, "#F7FAFD", "#FFFFFF"))
+  cells$y     <- (nr + 0.5) - cells$row
+  cells$x_pos <- sapply(cells$col, function(c) sum(cw[seq_len(c-1)]) + cw[c]/2)
+  x_max <- sum(cw)
+  t_gap <- if (!is.null(title)) 0.9 else 0
+  n_gap <- if (!is.null(note))  0.5 else 0
+  
+  p <- ggplot(cells, aes(x=x_pos, y=y)) +
+    geom_tile(aes(fill=fill, width=cw[col]), colour="grey75", linewidth=0.25) +
+    geom_text(aes(label=label,
+                  fontface=ifelse(is_hdr,"bold","plain"),
+                  colour=ifelse(is_hdr,"#1A3F5C","grey15")),
+              size=3.0, hjust=0,
+              nudge_x=-sapply(cells$col, function(c) cw[c]/2 - 0.07)) +
+    scale_fill_identity() + scale_colour_identity() +
+    scale_x_continuous(expand=c(0,0), limits=c(0, x_max)) +
+    scale_y_continuous(expand=c(0,0), limits=c(-n_gap, nr+0.5+t_gap)) +
+    theme_void() +
+    theme(plot.background=element_rect(fill="white", colour=NA),
+          plot.margin=margin(8,12,8,12))
+  
+  if (!is.null(title))
+    p <- p + annotate("text", x=0, y=nr+0.5+t_gap*0.85, label=title,
+                      hjust=0, vjust=0.5, size=3.8, fontface="bold", colour="#1A3F5C")
+  if (!is.null(note))
+    p <- p + annotate("text", x=0, y=-n_gap*0.7, label=note,
+                      hjust=0, vjust=0.5, size=2.4, fontface="italic", colour="grey45")
+  
+  ggsave(filepath, p,
+         width  = max(7, x_max + 0.5),
+         height = max(2, (nr + 1.5 + t_gap + n_gap) * 0.38),
+         dpi=150, bg="white")
+}
+```
+
+# Province and industry labels
+
+``` r
+prov_labels <- c(
+  "10"="NL","11"="PEI","12"="NS","13"="NB",
+  "24"="QC","35"="ON","46"="MB","47"="SK","48"="AB","59"="BC"
+)
+
+naics_labels <- c(
+  "01"="Agriculture","02"="Forestry & Logging","03"="Fishing, Hunting & Trapping",
+  "04"="Mining & Oil/Gas","05"="Utilities","06"="Construction",
+  "07"="Manufacturing - Durable","08"="Manufacturing - Non-Durable",
+  "09"="Wholesale Trade","10"="Retail Trade","11"="Transportation & Warehousing",
+  "12"="Finance & Insurance","13"="Real Estate","14"="Professional & Scientific",
+  "15"="Business & Support Services","16"="Educational Services",
+  "17"="Health Care & Social Assistance","18"="Information & Culture",
+  "19"="Accommodation & Food","20"="Other Services","21"="Public Administration"
+)
+```
+
+# Data Preparation
+
+## Load raw data
+
+We read the LFS public use microdata file and standardize column names
+to lowercase.
+
+``` r
+dt <- fread(DATA_PATH, na.strings = "")
+dt <- as_tibble(dt)
+
+# Standardize column names
+names(dt) <- tolower(names(dt))
+
+keep_cols <- c("survyear", "survmnth", "finalwt", "lfsstat", "educ", "prov", 
+               "naics_21", "immig", "age_12", "age_6")
+missing_cols <- setdiff(keep_cols, names(dt))
+if (length(missing_cols) > 0) {
+  stop("Missing columns: ", paste(missing_cols, collapse = ", "))
+}
+dt <- dt %>% select(all_of(keep_cols))
+if (!is.numeric(dt$finalwt)) dt$finalwt <- as.numeric(dt$finalwt)
+
+cat("Loaded:", nrow(dt), "rows\n")
+```
+
+    ## Loaded: 24723042 rows
+
+## Apply age filter (22+) and build panels
+
+We restrict the sample to individuals aged 22 and older, exclude
+postgraduates (educ == 6), and construct national and province‑level
+aggregates.
+
+``` r
+base <- dt %>%
+  filter(!educ %in% c(6)) %>%
+  mutate(
+    date = make_date(survyear, survmnth, 1),
+    age_12_num = as.numeric(age_12),
+    age_6_num  = as.numeric(age_6)
+  ) %>%
+  filter(
+    (age_6_num %in% 4:6) | (age_12_num %in% 3:12)
+  )
+
+agg_cols <- function(grp) {
+  grp %>% summarise(
+    bach_lf        = sum(finalwt[educ==5  & lfsstat %in% c(1,2,3)], na.rm=TRUE),
+    nobach_lf      = sum(finalwt[!educ %in% c(5,6) & lfsstat %in% c(1,2,3)], na.rm=TRUE),
+    bach_emp       = sum(finalwt[educ==5  & lfsstat %in% c(1,2)], na.rm=TRUE),
+    nobach_emp     = sum(finalwt[!educ %in% c(5,6) & lfsstat %in% c(1,2)], na.rm=TRUE),
+    total_emp      = sum(finalwt[lfsstat %in% c(1,2)], na.rm=TRUE),
+    bach_unemp     = sum(finalwt[educ==5  & lfsstat==3], na.rm=TRUE),
+    nobach_unemp   = sum(finalwt[!educ %in% c(5,6) & lfsstat==3], na.rm=TRUE),
+    immig_lf_share = sum(finalwt[immig %in% c(2,3) & lfsstat %in% c(1,2,3)], na.rm=TRUE) /
+                     sum(finalwt[lfsstat %in% c(1,2,3)], na.rm=TRUE),
+    .groups="drop"
+  ) %>%
+    mutate(
+      bach_u_rate    = bach_unemp   / bach_lf,
+      nobach_u_rate  = nobach_unemp / nobach_lf,
+      unemp_gap      = bach_u_rate - nobach_u_rate,
+      bach_density   = bach_emp   / total_emp,
+      nobach_density = nobach_emp / total_emp
+    ) %>%
+    mutate(across(where(is.numeric), ~ifelse(is.infinite(.) | is.nan(.), NA, .)))
+}
+
+agg        <- base %>% group_by(date) %>% agg_cols()
+prov_panel <- base %>% group_by(date, prov) %>% agg_cols() %>%
+  mutate(
+    year      = year(date),
+    prov_name = recode(as.character(prov), !!!prov_labels)
+  ) %>%
+  filter(bach_lf > 100, nobach_lf > 100)
+
+cat("National:", nrow(agg), "months | Province panel:", nrow(prov_panel), "cells\n")
+```
+
+    ## National: 240 months | Province panel: 2400 cells
+
+## Individual‑level dataset
+
+``` r
+indiv <- dt %>%
+  filter(!educ %in% c(6)) %>%
+  mutate(
+    age_12_num = as.numeric(age_12),
+    age_6_num  = as.numeric(age_6)
+  ) %>%
+  filter(
+    (age_6_num %in% 4:6) | (age_12_num %in% 3:12)
+  ) %>%
+  mutate(
+    date       = make_date(survyear, survmnth, 1),
+    employed   = if_else(lfsstat %in% c(1,2), 1L, 0L),
+    unemployed = if_else(lfsstat == 3, 1L, 0L),
+    is_bach    = if_else(educ == 5, 1L, 0L),
+    is_immig   = if_else(immig %in% c(2,3), 1L, 0L)
+  ) %>%
+  filter(!is.na(employed)) %>%
+  left_join(
+    agg %>% select(date, bach_density, nobach_density, unemp_gap, immig_lf_share),
+    by = "date"
+  ) %>%
+  mutate(bach_interaction = is_bach * bach_density)
+```
+
+# Descriptive Statistics
+
+We produce several tables summarizing the composition of the labour
+force and unemployment rates over time and across provinces.
+
+``` r
+# D1: Labour force composition
+tab_D1 <- agg %>% mutate(yr=year(date)) %>% group_by(yr) %>%
+  summarise(bach_lf_n=round(mean(bach_lf, na.rm=TRUE)),
+            nobach_lf_n=round(mean(nobach_lf, na.rm=TRUE)),
+            bach_share_pct=round(100*mean(bach_lf/(bach_lf+nobach_lf), na.rm=TRUE),2),
+            .groups="drop")
+write.csv(tab_D1, out("desc_D1_bach_number_share.csv"), row.names=FALSE)
+
+# D2: Unemployment rates and gap
+tab_D2 <- agg %>% mutate(yr=year(date)) %>% group_by(yr) %>%
+  summarise(bach_u_pct=round(100*mean(bach_u_rate, na.rm=TRUE),2),
+            nobach_u_pct=round(100*mean(nobach_u_rate, na.rm=TRUE),2),
+            gap_pp=round(100*mean(unemp_gap, na.rm=TRUE),2),
+            .groups="drop")
+write.csv(tab_D2, out("desc_D2_urates_by_group.csv"), row.names=FALSE)
+
+# D3: Combined with immigration share
+tab_D3 <- left_join(tab_D1, tab_D2, by="yr") %>%
+  left_join(agg %>% mutate(yr=year(date)) %>% group_by(yr) %>%
+              summarise(immig_share_pct=round(100*mean(immig_lf_share, na.rm=TRUE),2),
+                        .groups="drop"), by="yr")
+write.csv(tab_D3, out("desc_D3_tabulation_over_time.csv"), row.names=FALSE)
+
+# D5: Province summary
+tab_D5 <- prov_panel %>% filter(!is.na(prov_name)) %>% group_by(prov_name) %>%
+  summarise(n_months=n(),
+            bach_share_pct=round(100*mean(bach_lf/(bach_lf+nobach_lf), na.rm=TRUE),2),
+            bach_u_pct=round(100*mean(bach_u_rate, na.rm=TRUE),2),
+            nobach_u_pct=round(100*mean(nobach_u_rate, na.rm=TRUE),2),
+            gap_pp=round(100*mean(unemp_gap, na.rm=TRUE),2),
+            immig_share_pct=round(100*mean(immig_lf_share, na.rm=TRUE),2),
+            .groups="drop") %>%
+  arrange(desc(bach_share_pct))
+write.csv(tab_D5, out("desc_D5_province_summary.csv"), row.names=FALSE)
+
+# D6: Correlation matrix
+agg %>% select(unemp_gap, bach_density, nobach_density, bach_u_rate, nobach_u_rate, immig_lf_share) %>%
+  filter(complete.cases(.)) %>% cor() %>% round(3) %>% as.data.frame() %>%
+  write.csv(out("desc_D6_correlation_matrix.csv"), row.names=TRUE)
+
+# D7a: Aggregate summary stats
+datasummary((`Unemp Gap (pp) [Bach - Non-Bach]`=I(unemp_gap*100)) +
+              (`Bach U-Rate (%)`=I(bach_u_rate*100)) + (`Non-Bach U-Rate (%)`=I(nobach_u_rate*100)) +
+              (`Bach LF Share (%)`=I(bach_density*100)) + (`Non-Bach LF Share (%)`=I(nobach_density*100)) +
+              (`Immigrant LF Share (%)`=I(immig_lf_share*100)) ~ Mean+SD+Min+Median+Max,
+            data=agg, output="data.frame") %>%
+  save_table(out("desc_D7a_aggregate.png"),
+             title="Table D7a: Summary Statistics — National Aggregate Panel",
+             note=paste0("N=", nrow(agg), " monthly obs. FINALWT-weighted."))
+
+# D7b: Individual‑level summary stats
+datasummary((`Employed (0/1)`=employed) + (`Bachelor (0/1)`=is_bach) + (`Immigrant (0/1)`=is_immig) +
+              (`Bach LF Share (%)`=I(bach_density*100)) + (`Non-Bach LF Share (%)`=I(nobach_density*100)) +
+              (`Unemp Gap (pp)`=I(unemp_gap*100)) ~ Mean+SD+Min+Median+Max,
+            data=indiv, weights=~finalwt, output="data.frame") %>%
+  save_table(out("desc_D7b_individual.png"),
+             title="Table D7b: Summary Statistics — Individual-Level Sample",
+             note=paste0("N=", format(nrow(indiv), big.mark=","), " respondents. FINALWT-weighted."))
+```
+
+# Plots
+
+## Unemployment gap over time
+
+``` r
+p1 <- ggplot(agg, aes(date, unemp_gap)) +
+  geom_hline(yintercept=0, linetype="dotted", colour="grey50") +
+  geom_line(colour="#2C5F8A", linewidth=0.8) +
+  geom_smooth(method="loess", se=TRUE, colour="#E05C1A", linetype="dashed") +
+  scale_y_continuous(labels=percent_format(accuracy=0.1)) +
+  labs(x=NULL, y="Unemployment Rate Gap (pp)") +
+  theme_minimal(base_size=13)
+ggsave(out("unemp_gap_time.png"), p1, width=9, height=5, dpi=150)
+p1
+```
+
+![](E5029_Research_Codes_files/figure-gfm/unnamed-chunk-8-1.png)<!-- -->
+
+## Bachelor share of employment over time
+
+``` r
+p2 <- ggplot(agg, aes(date, bach_density)) +
+  geom_line(colour="#2C5F8A", linewidth=0.8) +
+  geom_smooth(method="loess", se=TRUE, colour="#E05C1A", linetype="dashed") +
+  scale_y_continuous(labels=percent_format(accuracy=1)) +
+  labs(x=NULL, y="Bachelor Share") +
+  theme_minimal(base_size=13)
+ggsave(out("bach_density_time.png"), p2, width=9, height=5, dpi=150)
+p2
+```
+
+![](E5029_Research_Codes_files/figure-gfm/unnamed-chunk-9-1.png)<!-- -->
+
+## Unemployment rates by education group
+
+``` r
+p3c <- indiv %>%
+  mutate(yr = year(date)) %>%
+  group_by(yr, is_bach) %>%
+  summarise(u_rate = weighted.mean(unemployed, finalwt, na.rm = TRUE), .groups = "drop") %>%
+  mutate(group = if_else(is_bach == 1, "Bachelor", "Non-Bachelor")) %>%
+  ggplot(aes(x = factor(yr), y = u_rate, fill = group)) +
+  geom_col(position = position_dodge(0.7), width = 0.65, alpha = 0.88) +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  scale_fill_manual(values = c("Bachelor" = "#2C5F8A", "Non-Bachelor" = "#E05C1A")) +
+  labs(x = "Year", y = "Unemployment Rate", fill = NULL) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major.x = element_blank())
+ggsave(out("urates_by_group_time.png"), p3c, width = 9, height = 5, dpi = 150)
+p3c
+```
+
+![](E5029_Research_Codes_files/figure-gfm/unnamed-chunk-10-1.png)<!-- -->
+
+## Province‑level heterogeneity
+
+``` r
+p4 <- prov_panel %>% filter(!is.na(prov_name)) %>% group_by(prov_name, year) %>%
+  summarise(unemp_gap=mean(unemp_gap, na.rm=TRUE), bach_density=mean(bach_density, na.rm=TRUE), .groups="drop") %>%
+  ggplot(aes(bach_density, unemp_gap, colour=prov_name)) +
+  geom_point(alpha=0.5, size=1.5) +
+  geom_smooth(method="lm", se=FALSE, linewidth=0.6) +
+  facet_wrap(~prov_name, scales="free") +
+  labs(x="Bachelor Share", y="Unemployment Gap (pp)") +
+  theme_minimal(base_size=11) + theme(legend.position="none")
+ggsave(out("province_heterogeneity.png"), p4, width=12, height=9, dpi=150)
+p4
+```
+
+![](E5029_Research_Codes_files/figure-gfm/unnamed-chunk-11-1.png)<!-- -->
+
+## Industry employment rates
+
+``` r
+indiv <- indiv %>%
+  mutate(industry = factor(naics_21, levels = names(naics_labels), labels = naics_labels))
+
+industry_data <- indiv %>%
+  filter(!is.na(industry)) %>%
+  group_by(industry, is_bach) %>%
+  summarise(emp_rate = weighted.mean(employed, finalwt, na.rm = TRUE), n = n(), .groups = "drop") %>%
+  filter(n >= 100)
+
+if (nrow(industry_data) == 0) stop("No industry groups meet the sample size threshold.")
+
+industry_wide <- industry_data %>%
+  pivot_wider(id_cols = industry, names_from = is_bach, values_from = emp_rate, names_prefix = "bach_") %>%
+  rename(bach_rate = bach_1, nobach_rate = bach_0) %>%
+  filter(!is.na(bach_rate) & !is.na(nobach_rate)) %>%
+  mutate(industry = reorder(industry, bach_rate))
+
+p5 <- ggplot(industry_wide, aes(y = industry)) +
+  geom_segment(aes(x = nobach_rate, xend = bach_rate, yend = industry), colour = "grey60", linewidth = 0.6) +
+  geom_point(aes(x = nobach_rate, colour = "Non-Bachelor"), size = 3, shape = 17) +
+  geom_point(aes(x = bach_rate, colour = "Bachelor"), size = 3, shape = 16) +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_colour_manual(name = NULL, values = c("Bachelor" = "#2C5F8A", "Non-Bachelor" = "#E05C1A")) +
+  labs(x = "Employment Rate", y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom", axis.text.y = element_text(size = 9),
+        panel.grid.major.y = element_blank(), panel.grid.minor = element_blank())
+ggsave(out("industry_heterogeneity.png"), p5, width = 11, height = 9, dpi = 150)
+p5
+```
+
+![](E5029_Research_Codes_files/figure-gfm/unnamed-chunk-12-1.png)<!-- -->
+\## Provincial composition (bachelor share and employment gap)
+
+``` r
+prov_order <- indiv %>% mutate(prov_name=recode(as.character(prov), !!!prov_labels)) %>%
+  filter(!is.na(prov_name)) %>% group_by(prov_name) %>%
+  summarise(pct=100*sum(finalwt[is_bach==1])/sum(finalwt), .groups="drop") %>%
+  arrange(desc(pct)) %>% pull(prov_name)
+
+comp_prov <- indiv %>% mutate(prov_name=recode(as.character(prov), !!!prov_labels)) %>%
+  filter(!is.na(prov_name)) %>% group_by(prov_name) %>%
+  summarise(pct_bach=round(100*sum(finalwt[is_bach==1])/sum(finalwt),1),
+            emp_rate_bach=round(100*weighted.mean(employed[is_bach==1], finalwt[is_bach==1], na.rm=TRUE),1),
+            emp_rate_nobach=round(100*weighted.mean(employed[is_bach==0], finalwt[is_bach==0], na.rm=TRUE),1),
+            emp_gap_pp=round(emp_rate_bach - emp_rate_nobach,1), .groups="drop")
+
+p7a <- comp_prov %>% mutate(prov_name=factor(prov_name, prov_order)) %>%
+  ggplot(aes(prov_name, pct_bach, fill=pct_bach)) + geom_col(width=0.65, show.legend=FALSE) +
+  geom_text(aes(label=paste0(pct_bach,"%")), vjust=-0.4, size=3.2) +
+  scale_fill_gradient(low="#A8C8E8", high="#2C5F8A") +
+  labs(x=NULL, y="Bach Share (%)") + theme_minimal(base_size=11)
+
+p7b <- comp_prov %>% mutate(prov_name=factor(prov_name, prov_order)) %>%
+  ggplot(aes(prov_name, emp_gap_pp, fill=emp_gap_pp)) + geom_col(width=0.65, show.legend=FALSE) +
+  geom_text(aes(label=paste0(ifelse(emp_gap_pp>=0,"+",""), emp_gap_pp,"pp")), vjust=-0.4, size=3.2) +
+  scale_fill_gradient2(low="#E05C1A", mid="grey90", high="#2C5F8A", midpoint=0) +
+  labs(x="Province", y="Employment Gap (Bach minus Non-Bach, pp)") + theme_minimal(base_size=11)
+
+p7 <- p7a / p7b + plot_layout(heights=c(1,1))
+ggsave(out("province_composition.png"), p7, width=11, height=9, dpi=150)
+p7
+```
+
+![](E5029_Research_Codes_files/figure-gfm/unnamed-chunk-13-1.png)<!-- -->
+
+# Model Estimation
+
+All models include the main effect of bachelor density (bach_density)
+alongside its interaction with bachelor status.
+
+## Linear Probability Model with Interaction
+
+``` r
+lpm_interaction <- feols(
+  unemployed ~ is_bach + bach_density + bach_interaction + is_immig | prov + survyear + naics_21,
+  data    = indiv,
+  weights = ~finalwt,
+  cluster = ~prov
+)
+
+modelsummary(
+  list("Interaction LPM" = lpm_interaction),
+  stars = TRUE,
+  coef_map = c("is_bach" = "Bachelor", "bach_density" = "Bachelor Density",
+               "bach_interaction" = "Bachelor × Density", "is_immig" = "Immigrant"),
+  gof_map = list(
+    list(raw = "nobs", clean = "N", fmt = function(x) format(round(x), big.mark = ",")),
+    list(raw = "r.squared", clean = "Within R²", fmt = 3),
+    list(raw = "adj.r.squared", clean = "Adj. Within R²", fmt = 3)
+  ),
+  output = "data.frame"
+) %>%
+  save_table(
+    out("lpm_interaction_results.png"),
+    title = "Unemployment Probability: LPM with Interaction",
+    note  = paste0(
+      "DV: Unemployed (1) / Not Unemployed (0). Includes province, year, and industry fixed effects. ",
+      "FINALWT-weighted, province-clustered SE. *** p<0.01, ** p<0.05, * p<0.1. Postgrad excluded. Source: LFS 2006-2025."
+    )
+  )
+```
+
+## Aggregate Unemployment Gap Model (Province‑Year Panel)
+
+``` r
+model_gap <- feols(
+  unemp_gap ~ bach_density | prov + year,
+  data = prov_panel,
+  cluster = ~prov
+)
+
+modelsummary(
+  list("Gap Model" = model_gap),
+  stars = TRUE,
+  gof_map = list(
+    list(raw = "nobs", clean = "N (province-months)", fmt = function(x) format(round(x), big.mark = ",")),
+    list(raw = "r.squared", clean = "Within R²", fmt = 3),
+    list(raw = "adj.r.squared", clean = "Adj. Within R²", fmt = 3)
+  ),
+  output = "data.frame"
+) %>%
+  save_table(
+    out("model4_gap_results.png"),
+    title = "Aggregate Unemployment Gap (Province-Year Panel)",
+    note  = paste0(
+      "DV: Unemployment gap (Bach minus Non-Bach u-rate). Province and year FE included. ",
+      "Province-clustered SE. *** p<0.01, ** p<0.05, * p<0.1."
+    )
+  )
+```
+
+## Probit Models
+
+``` r
+probit_1 <- feglm(unemployed ~ is_bach + is_immig, data = indiv, weights = ~finalwt, family = binomial("probit"))
+probit_2 <- feglm(unemployed ~ is_bach + bach_density + bach_interaction + is_immig, data = indiv, weights = ~finalwt, family = binomial("probit"))
+probit_3 <- feglm(unemployed ~ is_bach + bach_density + bach_interaction + is_immig | prov + survyear, data = indiv, weights = ~finalwt, family = binomial("probit"))
+probit_4 <- feglm(unemployed ~ is_bach + bach_density + bach_interaction + is_immig | prov + survyear + naics_21, data = indiv, weights = ~finalwt, family = binomial("probit"))
+
+# Summary statistics for probit sample
+m1_vars <- indiv %>% select(unemployed, is_bach, is_immig, bach_density, finalwt) %>% filter(complete.cases(.))
+summary_stats_probit <- m1_vars %>%
+  reframe(
+    Variable = c("Unemployed (0/1)", "Bachelor (0/1)", "Immigrant (0/1)", "Bach Density (%)"),
+    Mean = c(weighted.mean(unemployed, finalwt, na.rm=TRUE), weighted.mean(is_bach, finalwt, na.rm=TRUE),
+             weighted.mean(is_immig, finalwt, na.rm=TRUE), weighted.mean(bach_density, finalwt, na.rm=TRUE)*100),
+    SD = c(sd(unemployed), sd(is_bach), sd(is_immig), sd(bach_density)*100),
+    Median = c(median(unemployed), median(is_bach), median(is_immig), median(bach_density)*100),
+    Min = c(min(unemployed), min(is_bach), min(is_immig), min(bach_density)*100),
+    Max = c(max(unemployed), max(is_bach), max(is_immig), max(bach_density)*100)
+  ) %>% mutate(across(where(is.numeric), ~ round(., 3)))
+
+save_table(summary_stats_probit, out("model1_summary_stats.png"),
+           title = "Model 1 — Summary Statistics: Individual Probit Sample",
+           note = paste0("N = ", format(nrow(m1_vars), big.mark=","), " respondents. FINALWT-weighted. Postgrad excluded."))
+
+# Probit results table
+modelsummary(
+  list("Baseline" = probit_1, "+Supply" = probit_2, "+Prov/Year FE" = probit_3, "+Immig+Ind FE" = probit_4),
+  stars = TRUE,
+  coef_map = c("(Intercept)" = "Constant", "is_bach" = "Bachelor", "bach_density" = "Bachelor Density",
+               "bach_interaction" = "Bachelor × Density", "is_immig" = "Immigrant"),
+  gof_map = list(
+    list(raw = "nobs", clean = "N", fmt = function(x) format(round(x), big.mark = ",")),
+    list(raw = "logLik", clean = "Log-Likelihood", fmt = 2),
+    list(raw = "r.squared", clean = "Pseudo R²", fmt = 3)
+  ),
+  output = "data.frame"
+) %>%
+  save_table(
+    out("model1_probit_results.png"),
+    title = "Probability of Unemployment (Probit)",
+    note  = paste0(
+      "Outcome: Unemployed (1) / Not Unemployed (0). FINALWT-weighted. ",
+      "Spec 2 adds bachelor density and its interaction. Spec 3 adds province and year FE. ",
+      "Spec 4 adds immigrant status and industry FE. Constant not identified in FE models. ",
+      "*** p<0.01, ** p<0.05, * p<0.1. Postgrad excluded. Source: LFS."
+    )
+  )
+```
+
+# Conclusion
+
+This document reproduces the entire empirical workflow of the paper. All
+tables and figures are saved in the specified output directory. The
+results consistently show that while bachelor holders maintain an
+unemployment advantage, that advantage erodes modestly as the relative
+supply of degree holders increases—evidence of mild crowding‑out at the
+individual level, contrasting with a widening aggregate gap driven by
+demand‑side factors.

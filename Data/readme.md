@@ -32,17 +32,6 @@ You must comply with Statistics Canada's data usage agreement
 Do not redistribute the raw data without permission
 Always cite Statistics Canada as the source
 
-Questions?
-For questions about data access or licensing:
-Contact Statistics Canada directly
-Review their data documentation
-Check the terms of use on their website
-
-Running the Analysis
-After placing EVERMD.csv in this directory, run:
-# In RStudio
-rmarkdown::render("Codes/E5029_Research_Codes.Rmd")
-
 The analysis will produce:
 Descriptive statistics
 Model results (linear probability, probit, panel regression)

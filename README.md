@@ -1,5 +1,7 @@
 # The Relative Supply of Bachelor's Degree Holders and the Unemployment Gap in Canada
 
+![R](https://img.shields.io/badge/Language-R-blue?style=flat-square&logo=r)
+
 This repository contains the replication code and analysis for the paper examining whether the relative supply of bachelor's degree holders affects the unemployment gap between degree and non-degree holders in Canada.
 
 ## Research Question

@@ -7,24 +7,15 @@ Data Source
 Provider: Statistics Canada
 Dataset: Labour Force Survey (LFS) Public Use Microdata File (PUMF)
 Link: Statistics Canada - Labour Force Survey
+
 How to Obtain the Data
-
-Either: 
-Visit Statistics Canada
-Go to https://www.statcan.gc.ca/
-Search for "Labour Force Survey" or navigate to their microdata download section
-Download the PUMF
-Create an account or log in
-Download the Labour Force Survey PUMF for the period 2006-2025
-The file will be provided in CSV format
-
-Or:
 Download the EVERMD.csv file through this link: https://www.dropbox.com/scl/fo/b4ygmw9g4i9oeffip6p2u/AHR8NIvVRTxaswzE_hWk0Ys?rlkey=oeow30u6l02akphlxim7nl5lq&st=oc8vz4uj&dl=0
+
 Save it to this directory: Data/EVERMD.csv
 Ensure the filename matches exactly
 
 File Requirements
-Filename: EVERMD.csv (must be exact)
+Filename: EVERMD.csv 
 Location: Data/ folder in the project root
 Format: CSV (comma-separated values)
 Expected Size: ~2.7 GB
